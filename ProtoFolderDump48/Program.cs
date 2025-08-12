@@ -90,7 +90,7 @@ namespace ProtoFolderDump48
                 // 兜底 2：消息类型静态 Descriptor
                 hitMessageRoots += TryCollectByMessageTypes(asm, set, seenNames);
 
-                // 兜底 3：枚举类型静态 Descriptor（不一定存在）
+                // 兜底 3：枚举类型静态 Descriptor
                 hitEnumRoots += TryCollectByEnumTypes(asm, set, seenNames);
             }
 
@@ -98,7 +98,7 @@ namespace ProtoFolderDump48
             {
                 Console.WriteLine("未找到任何 Protobuf Reflection 定义。");
                 Console.WriteLine(@"建议：追加你已知的类型名，例如：
-  ProtoFolderDump48.exe ""C:\...\VisionSource_目录"" ImageDisplayFrameInfo,ImageRgb3Reflection");
+  ProtoFolderDump48.exe ""C:\...\发布目录"" ImageDisplayFrameInfo,ImageRgb3Reflection");
                 return 0;
             }
 
@@ -108,11 +108,14 @@ namespace ProtoFolderDump48
                 set.WriteTo(fs);
             Console.WriteLine("DescriptorSet 导出完成: " + descPath + " (files: " + set.File.Count + ")");
 
-            // 生成近似 .proto
+            // 输出 .proto（保持 FileDescriptorProto.Name 的相对路径；不加 .recovered）
             foreach (var f in set.File)
             {
-                var name = MakeSafeName(f.Name);
-                var outPath = Path.Combine("out", name + ".recovered.proto");
+                var rel = SanitizeRelativePathOrFallback(f.Name);
+                var outPath = Path.Combine("out", rel);
+                var outDir = Path.GetDirectoryName(outPath);
+                if (!string.IsNullOrEmpty(outDir)) Directory.CreateDirectory(outDir);
+
                 File.WriteAllText(outPath, PrintProto(f), Encoding.UTF8);
                 Console.WriteLine("  + " + outPath);
             }
@@ -267,7 +270,7 @@ namespace ProtoFolderDump48
             return hits;
         }
 
-        // 取静态 Descriptor（兼容属性/方法，且不假设类型）
+        // 取静态 Descriptor（兼容属性/方法）
         private static object TryGetStaticDescriptorObject(Type t)
         {
             try
@@ -289,7 +292,7 @@ namespace ProtoFolderDump48
             try
             {
                 var name = GetStringProperty(fileDescriptorObj, "Name");
-                if (string.IsNullOrEmpty(name)) name = Guid.NewGuid().ToString("N");
+                if (string.IsNullOrEmpty(name)) name = Guid.NewGuid().ToString("N") + ".proto";
 
                 if (!seen.Add(name))
                     return false;
@@ -317,8 +320,12 @@ namespace ProtoFolderDump48
 
                 if (localProto != null)
                 {
+                    // 若 Name 为空，回填一个稳定名字（避免导出文件名空白）
+                    if (string.IsNullOrEmpty(localProto.Name))
+                        localProto.Name = name;
+
                     set.File.Add(localProto);
-                    Console.WriteLine("  [fd] " + (string.IsNullOrEmpty(localProto.Name) ? name : localProto.Name));
+                    Console.WriteLine("  [fd] " + localProto.Name);
                 }
                 else
                 {
@@ -409,7 +416,7 @@ namespace ProtoFolderDump48
                 var ev = new EnumValueDescriptorProto
                 {
                     Name = GetStringProperty(v, "Name") ?? "Value",
-                    Number = SafeGetInt32(v, "Number")
+                    Number = SafeGetInt32(v, "Number") // EnumValueDescriptor 的 Number
                 };
                 enp.Value.Add(ev);
             }
@@ -471,10 +478,14 @@ namespace ProtoFolderDump48
             var fdp = new FieldDescriptorProto
             {
                 Name = GetStringProperty(fieldObj, "Name") ?? "field",
-                Number = SafeGetInt32(fieldObj, "Number"),
-                Label = FieldDescriptorProto.Types.Label.Optional, // 默认 optional
+                Number = SafeGetInt32(fieldObj, "FieldNumber"), // ★ 修复：FieldDescriptor 的属性名是 FieldNumber
+                Label = FieldDescriptorProto.Types.Label.Optional, // 默认 optional（proto3 默认为 optional）
                 Type = FieldDescriptorProto.Types.Type.String      // 占位，稍后映射
             };
+
+            // 若仍为 0，再尝试 "Number" 作兜底（极少数自定义实现）
+            if (fdp.Number == 0)
+                fdp.Number = SafeGetInt32(fieldObj, "Number");
 
             var isRepeatedObj = GetProperty(fieldObj, "IsRepeated");
             if (isRepeatedObj is bool b && b)
@@ -508,18 +519,21 @@ namespace ProtoFolderDump48
                 case "SFixed64": fdp.Type = FieldDescriptorProto.Types.Type.Sfixed64; break;
                 case "SInt32": fdp.Type = FieldDescriptorProto.Types.Type.Sint32; break;
                 case "SInt64": fdp.Type = FieldDescriptorProto.Types.Type.Sint64; break;
+
                 case "Enum":
                     fdp.Type = FieldDescriptorProto.Types.Type.Enum;
                     var enumType = GetProperty(fieldObj, "EnumType");
                     var enumFull = GetStringProperty(enumType, "FullName");
                     if (!string.IsNullOrEmpty(enumFull)) fdp.TypeName = "." + enumFull;
                     break;
+
                 case "Message":
                     fdp.Type = FieldDescriptorProto.Types.Type.Message;
                     var msgType = GetProperty(fieldObj, "MessageType");
                     var msgFull = GetStringProperty(msgType, "FullName");
                     if (!string.IsNullOrEmpty(msgFull)) fdp.TypeName = "." + msgFull;
                     break;
+
                 default:
                     // 少见的 Group/未知：降级为 bytes，保证生成
                     fdp.Type = FieldDescriptorProto.Types.Type.Bytes;
@@ -560,7 +574,7 @@ namespace ProtoFolderDump48
             return sdp;
         }
 
-        // ---------------- 打印近似 .proto ----------------
+        // ---------------- 打印 .proto（保持原始 import 路径） ----------------
 
         private static string PrintProto(FileDescriptorProto f)
         {
@@ -732,17 +746,33 @@ namespace ProtoFolderDump48
             return list;
         }
 
-        private static string MakeSafeName(string name)
-        {
-            var invalid = Path.GetInvalidFileNameChars();
-            var chars = name.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray();
-            var safe = new string(chars);
-            return safe.EndsWith(".proto", StringComparison.OrdinalIgnoreCase) ? safe.Substring(0, safe.Length - 6) : safe;
-        }
-
         private static string TrimDot(string s)
         {
             return (!string.IsNullOrEmpty(s) && s.StartsWith(".")) ? s.Substring(1) : s;
+        }
+
+        // 将 FileDescriptorProto.Name 转为相对路径（保留目录层级），每段做文件名安全化
+        private static string SanitizeRelativePathOrFallback(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                return "unnamed/" + Guid.NewGuid().ToString("N") + ".proto";
+
+            // 统一使用 '/' 作为分隔，再按段处理
+            var parts = name.Replace('\\', '/').Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+            var safeParts = parts.Select(SanitizeFileNamePart).ToArray();
+
+            var safeRel = Path.Combine(safeParts);
+            if (!safeRel.EndsWith(".proto", StringComparison.OrdinalIgnoreCase))
+                safeRel += ".proto";
+            return safeRel;
+        }
+
+        private static string SanitizeFileNamePart(string part)
+        {
+            if (string.IsNullOrEmpty(part)) return "_";
+            var invalid = Path.GetInvalidFileNameChars();
+            var chars = part.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray();
+            return new string(chars);
         }
 
         private static void DumpEmbeddedProtos(Assembly asm)
@@ -754,7 +784,7 @@ namespace ProtoFolderDump48
                                .ToArray();
                 if (names.Length == 0) return;
 
-                var asmId = MakeSafeName(Path.GetFileNameWithoutExtension(asm.Location) ?? asm.GetName().Name);
+                var asmId = SanitizeFileNamePart(Path.GetFileNameWithoutExtension(asm.Location) ?? asm.GetName().Name);
                 var outDir = Path.Combine("out", "resources", asmId);
                 Directory.CreateDirectory(outDir);
 
@@ -763,7 +793,8 @@ namespace ProtoFolderDump48
                     using (var s = asm.GetManifestResourceStream(res))
                     {
                         if (s == null) continue;
-                        var fileName = MakeSafeName(res.Replace('/', '_').Replace('\\', '_'));
+                        var fileName = res.Replace('/', '_').Replace('\\', '_');
+                        fileName = SanitizeFileNamePart(fileName);
                         if (!fileName.EndsWith(".proto", StringComparison.OrdinalIgnoreCase))
                             fileName += ".proto";
                         var full = Path.Combine(outDir, fileName);
