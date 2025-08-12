@@ -51,19 +51,19 @@ ProtoFolderDump48.exe <folderPath> [TypeNamesCsv]
 
 - `folderPath`：待扫描根目录（递归查找 `*.dll`、`*.exe`）
 - `TypeNamesCsv`（可选）：**定向抓取**的类型名，逗号分隔；支持**短名**或**完全限定名**  
-  例如：`ImageDisplayFrameInfo,ImageRgb3Reflection` 或 `VisionSource.CameraManages.ImageDisplayFrameInfo`
+  例如：`ImageDisplayFrameInfo,ImageRgb3Reflection` 或 `app.CameraManages.ImageDisplayFrameInfo`
 
 ### 示例
 
 ```bash
 # 仅按目录全量扫描（自动兜底）
-ProtoFolderDump48.exe "C:\Apps\VisionSource"
+ProtoFolderDump48.exe "C:\Apps\app"
 
 # 推荐：提供已知类型名，命中更稳、速度更快
-ProtoFolderDump48.exe "C:\Apps\VisionSource" ImageDisplayFrameInfo,ImageRgb3Reflection
+ProtoFolderDump48.exe "C:\Apps\app" ImageDisplayFrameInfo,ImageRgb3Reflection
 
 # 也可使用完全限定名
-ProtoFolderDump48.exe "C:\Apps\VisionSource" VisionSource.CameraManages.ImageDisplayFrameInfo
+ProtoFolderDump48.exe "C:\Apps\app" app.CameraManages.ImageDisplayFrameInfo
 ```
 
 **退出码**
